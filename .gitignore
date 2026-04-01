@@ -1,0 +1,44 @@
+# 🔐 Archivos sensibles
+.env
+.env.*
+*.env
+
+# 🔑 Keys / secrets
+secrets.json
+config.json
+
+# 🐍 Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# 📦 Entorno virtual
+venv/
+env/
+ENV/
+
+# 🧠 Jupyter
+.ipynb_checkpoints/
+
+# 📁 Logs
+*.log
+
+# 🗂️ Sistema
+.DS_Store
+Thumbs.db
+
+# 🧰 IDEs
+.vscode/
+.idea/
+
+# 📦 Build
+dist/
+build/
+*.egg-info/
+
+# 🚨 Datos sensibles (muy importante para tu proyecto IA)
+data/
+uploads/
+*.csv
+*.xlsx
