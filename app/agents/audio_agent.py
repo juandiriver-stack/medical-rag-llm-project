@@ -19,17 +19,51 @@ _PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "agent_audio.md"
 INTENT_SYSTEM = _PROMPT_PATH.read_text(encoding="utf-8") if _PROMPT_PATH.exists() else ""
 
 _RULES = {
-    "estadisticas":    ["resumen", "estadística", "total", "cuántos", "cuantos", "summary"],
-    "buscar_paciente": ["paciente", "listar pacientes", "id:", "paciente id", "historial"],
-    "consulta_medica": ["consulta", "consultas", "enfermedad", "motivo", "examen",
-                        "diagnóstico", "tratamiento", "síntoma", "dolor", "frecuente"],
+    # Regla de desempate: estadisticas va ANTES que consulta_medica
+    # para que "enfermedades más frecuentes" → estadisticas, no consulta_medica
+    "estadisticas": [
+        "más frecuentes", "más comunes", "frecuente", "frecuentes",
+        "resumen", "estadística", "estadísticas", "total", "totales",
+        "cuántos", "cuantos", "cuántas", "cuantas",
+        "summary", "últimas consultas", "últimos registros",
+        "diagnósticos más", "enfermedades más", "motivos más",
+        "cuántas consultas", "cuántos pacientes",
+    ],
+    "buscar_paciente": [
+        "listar pacientes", "lista de pacientes",
+        "historial de", "historial del", "historial clínico",
+        "datos del paciente", "datos de",
+        "paciente id", "paciente #", "id:", "cedula", "cédula",
+        "ci:", "identificación",
+    ],
+    "consulta_medica": [
+        "síntomas", "síntoma", "sintomas", "sintoma",
+        "enfermedad", "diagnóstico", "diagnóstico",
+        "dolor de", "casos de", "pacientes con",
+        "fiebre", "lumbalgia", "cefalea", "diabetes",
+        "tratamiento", "examen", "motivo de consulta",
+        "soy el dr", "soy el doctor", "soy la doctora",
+    ],
 }
 
 def _intent_por_reglas(text: str) -> dict:
+    """
+    Fallback sin LLM — aplica las mismas 4 rutas del prompt .md.
+    Orden de evaluación: estadisticas → buscar_paciente → consulta_medica → general
+    """
     t = text.lower()
-    for intent, words in _RULES.items():
-        if any(w in t for w in words):
-            return {"intent": intent, "keywords": [w for w in t.split() if len(w)>3][:4], "clean_text": text}
+
+    # Detectar números largos (ID o cédula) como buscar_paciente
+    import re
+    if re.search(r'\b\d{5,10}\b', t):
+        kws = [w for w in t.split() if len(w) > 3][:4]
+        return {"intent": "buscar_paciente", "keywords": kws, "clean_text": text}
+
+    for intent, phrases in _RULES.items():
+        if any(ph in t for ph in phrases):
+            kws = [w for w in t.split() if len(w) > 3][:4]
+            return {"intent": intent, "keywords": kws, "clean_text": text}
+
     return {"intent": "general", "keywords": [], "clean_text": text}
 
 

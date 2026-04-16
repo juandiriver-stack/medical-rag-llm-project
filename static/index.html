@@ -24,7 +24,7 @@
   .prov-btn{padding:8px 11px;border-radius:9px;border:2px solid var(--border);background:#fff;cursor:pointer;font-size:.84rem;display:flex;align-items:center;gap:8px;transition:all .15s;width:100%}
   .prov-btn.active.claude{border-color:#d97706;color:#92400e}
   .prov-btn.active.openai{border-color:#16a34a;color:#14532d}
-  .prov-btn.active.ollama{border-color:#7c3aed;color:#4c1d95}
+  /*.prov-btn.active.ollama{border-color:#7c3aed;color:#4c1d95}*/
   .dot-c{background:#d97706;width:9px;height:9px;border-radius:50%}
   .dot-o{background:#16a34a;width:9px;height:9px;border-radius:50%}
   .dot-l{background:#7c3aed;width:9px;height:9px;border-radius:50%}
@@ -66,6 +66,13 @@
   .mb.rec{border-color:#ef4444;background:#fee2e2;animation:puls .8s infinite}
   @keyframes puls{0%,100%{transform:scale(1)}50%{transform:scale(1.05)}}
   .ptrace{margin-top:5px;font-size:.71rem;opacity:.6;display:flex;gap:5px;flex-wrap:wrap}
+  .hc-btn{margin-top:8px;padding:5px 12px;background:#0d9488;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:.78rem;display:inline-flex;align-items:center;gap:5px;}
+  .hc-btn:hover{background:#0f766e;}
+  .hc-preview{margin-top:6px;font-size:.73rem;background:rgba(13,148,136,.08);border:1px solid rgba(13,148,136,.25);border-radius:6px;padding:6px 10px;line-height:1.6;}
+  .hc-field{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:2px;}
+  .hc-label{font-weight:500;color:#0d9488;min-width:100px;}
+  .hc-val{color:var(--fg,#1e293b);}
+  .hc-conf{font-size:.68rem;opacity:.6;margin-top:4px;}
   .pt{padding:2px 6px;border-radius:7px;background:var(--border)}
   .pb{margin-top:5px;padding:3px 9px;font-size:.71rem;border:1px solid var(--border);border-radius:6px;background:#fff;cursor:pointer}
 
@@ -110,7 +117,7 @@
       <div style="display:flex;flex-direction:column;gap:6px;margin-top:7px">
         <button class="prov-btn active claude" onclick="setProv('claude',this)"><div class="dot-c"></div>Claude</button>
         <button class="prov-btn openai" onclick="setProv('openai',this)"><div class="dot-o"></div>ChatGPT</button>
-        <button class="prov-btn ollama" onclick="setProv('ollama',this)"><div class="dot-l"></div>Ollama</button>
+        <!--<button class="prov-btn ollama" onclick="setProv('ollama',this)"><div class="dot-l"></div>Ollama</button>-->
       </div>
     </div>
     <div>
@@ -233,7 +240,7 @@ function togMic(){
 
   const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
   const r=new SR();
-  r.lang='es-EC';
+  r.lang='es-ES';
   r.interimResults=false;
   r.maxAlternatives=1;
   r.continuous=false;
@@ -304,6 +311,13 @@ async function send(){
       body:JSON.stringify({message:msg,provider:prov,session_id:sid,tts:ttsOn})})).json();
     removeTyp(tid);
     const txt=typeof d.response==='string'?d.response:JSON.stringify(d.response,null,2);
+    // Extracción HC en paralelo
+    try{
+      const hcRes=await(await fetch(API+'/hc/extract',{method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({texto:msg+'\n\nRespuesta:\n'+txt,es_audio:d.input_source==='audio'})})).json();
+      d._hc=hcRes;
+    }catch(_){d._hc=null;}
     addMsg('b',txt,d);
     if(ttsOn&&d.tts?.mode==='browser')speak(txt);
     if(ttsOn&&d.tts?.audio_b64)playB64(d.tts.audio_b64);
@@ -328,7 +342,53 @@ function addMsg(role,text,d){
   }
   let ttsBtn='';
   if(role==='b'&&ttsOn)ttsBtn=`<button class="pb" onclick="speak(this.dataset.t)" data-t="${text.replace(/"/g,'&quot;').replace(/\n/g,' ')}">▶ Reproducir</button>`;
-  div.innerHTML=`<div class="av">${av}</div><div class="bub">${meta?`<div class="meta">${meta}</div>`:''}${text}${pipe}${ttsBtn}</div>`;
+
+  // Botón descarga HC + preview de campos extraídos
+  // Mostrar siempre que haya respuesta del bot (ok=true o fallback con datos crudos)
+  let hcBlock='';
+  if(role==='b'&&d._hc){
+    // Usar HC extraída por LLM si ok=true, sino armar un JSON mínimo con datos crudos
+    const hcData = d._hc.ok && d._hc.hc
+      ? d._hc.hc
+      : {
+          motivo_consulta: {motivoConsulta: text.substring(0,300), enfermedadActual: null},
+          estado_enfermedad: null, recetas: [], examenes: [],
+          revision_organos: [], examen_fisico: [],
+          metadata: {
+            voz_doctor: null, voz_paciente: text.substring(0,200),
+            es_audio: d.input_source==='audio',
+            confianza: 'baja', campos_extraidos: 1,
+            nota: d._hc.error || 'Extracción simplificada — LLM no disponible'
+          }
+        };
+
+    const hc=hcData;
+    const meta=hc.metadata||{};
+    const conf=meta.confianza||'baja';
+    const campos=meta.campos_extraidos||0;
+    const confColor={alta:'#059669',media:'#d97706',baja:'#dc2626'}[conf]||'#888';
+
+    // Preview de campos encontrados
+    let previewHTML='';
+    const mc=hc.motivo_consulta||{};
+    if(mc.motivoConsulta) previewHTML+=`<div class="hc-field"><span class="hc-label">Motivo:</span><span class="hc-val">${String(mc.motivoConsulta).substring(0,100)}</span></div>`;
+    if(mc.enfermedadActual) previewHTML+=`<div class="hc-field"><span class="hc-label">Enfermedad:</span><span class="hc-val">${String(mc.enfermedadActual).substring(0,100)}</span></div>`;
+    if((hc.recetas||[]).length>0) previewHTML+=`<div class="hc-field"><span class="hc-label">💊 Recetas:</span><span class="hc-val">${hc.recetas.map(r=>r.nombreMedicamento||'?').join(', ')}</span></div>`;
+    if((hc.examenes||[]).length>0) previewHTML+=`<div class="hc-field"><span class="hc-label">🔬 Exámenes:</span><span class="hc-val">${hc.examenes.map(e=>e.nombreExamen||'?').join(', ')}</span></div>`;
+    if((hc.examen_fisico||[]).length>0) previewHTML+=`<div class="hc-field"><span class="hc-label">🩺 Examen físico:</span><span class="hc-val">${hc.examen_fisico.map(e=>e.region||'?').join(', ')}</span></div>`;
+    if(meta.voz_doctor) previewHTML+=`<div class="hc-field"><span class="hc-label">🩺 Doctor:</span><span class="hc-val">${String(meta.voz_doctor).substring(0,80)}${String(meta.voz_doctor).length>80?'…':''}</span></div>`;
+    if(meta.voz_paciente) previewHTML+=`<div class="hc-field"><span class="hc-label">🙋 Paciente:</span><span class="hc-val">${String(meta.voz_paciente).substring(0,80)}${String(meta.voz_paciente).length>80?'…':''}</span></div>`;
+
+    const hcJson=JSON.stringify(hc, null, 2);
+    const blob=`data:application/json;charset=utf-8,${encodeURIComponent(hcJson)}`;
+    const ts=new Date().toISOString().slice(0,19).replace(/[T:]/g,'-');
+
+    hcBlock=`
+      ${previewHTML?`<div class="hc-preview">${previewHTML}<div class="hc-conf" style="color:${confColor}">Confianza: ${conf} · ${campos} campo${campos!==1?'s':''} extraído${campos!==1?'s':''}</div></div>`:''}
+      <a class="hc-btn" href="${blob}" download="HC_${ts}.json">⬇ Descargar HC.json</a>`;
+  }
+
+  div.innerHTML=`<div class="av">${av}</div><div class="bub">${meta?`<div class="meta">${meta}</div>`:''}${text}${pipe}${hcBlock}${ttsBtn}</div>`;
   wrap.appendChild(div);wrap.scrollTop=wrap.scrollHeight;
 }
 

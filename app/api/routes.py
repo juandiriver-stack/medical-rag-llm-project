@@ -127,3 +127,106 @@ def consultas_por_paciente(paciente_id: int, db: Session = Depends(get_db)) -> d
 @router.get("/summary")
 def summary(db: Session = Depends(get_db)) -> dict:
     return ConsultasTool(db).summary()
+
+
+# ── Historia Clínica — extracción desde texto o audio ─────────────────────
+@router.post("/hc/extract")
+async def extract_hc(payload: dict, db: Session = Depends(get_db)) -> dict:
+    """
+    Extrae los campos de Historia Clínica desde texto de chat o transcripción de audio.
+    NUNCA retorna error HTTP — siempre devuelve un JSON con ok=True o ok=False + fallback.
+
+    Body:
+        texto    (str)  : transcripción o mensaje de chat
+        es_audio (bool) : True si el texto viene de audio (activa separación de voces)
+    """
+    from app.agents.agent_hc_extractor import HCExtractorAgent, segmentar_conversacion
+    from app.core.config import settings
+
+    texto    = payload.get("texto", "").strip()
+    es_audio = bool(payload.get("es_audio", False))
+
+    if not texto:
+        # Retorna fallback mínimo en lugar de error
+        return {"ok": False, "error": "texto vacío",
+                "hc": _hc_fallback("", {}, "texto_vacio")}
+
+    try:
+        agente    = HCExtractorAgent(llm_provider=getattr(settings, "llm_provider", None))
+        resultado = agente.extract(texto, es_audio=es_audio)
+        return resultado
+    except Exception as e:
+        # Fallback: segmentar voces sin LLM y retornar JSON mínimo
+        try:
+            segs = segmentar_conversacion(texto)
+        except Exception:
+            segs = {"doctor": "", "paciente": texto[:300], "sin_clasificar": ""}
+        return {"ok": False, "error": str(e),
+                "hc": _hc_fallback(texto, segs, "error_llm")}
+
+
+def _hc_fallback(texto: str, segs: dict, razon: str) -> dict:
+    """HC mínima cuando el LLM no está disponible — siempre descargable."""
+    return {
+        "motivo_consulta": {
+            "motivoConsulta":   texto[:300] if texto else None,
+            "enfermedadActual": None
+        },
+        "estado_enfermedad": None,
+        "recetas":           [],
+        "examenes":          [],
+        "revision_organos":  [],
+        "examen_fisico":     [],
+        "metadata": {
+            "voz_doctor":      segs.get("doctor", "") or None,
+            "voz_paciente":    segs.get("paciente", "") or None,
+            "es_audio":        False,
+            "confianza":       "baja",
+            "campos_extraidos": 1 if texto else 0,
+            "nota":            f"Extracción simplificada ({razon})"
+        }
+    }
+
+
+@router.post("/hc/extract/audio")
+async def extract_hc_audio(
+    audio: UploadFile = File(...),
+    db: Session = Depends(get_db)
+) -> dict:
+    """
+    Recibe un archivo de audio, lo transcribe y extrae la HC con separación
+    de voces doctor/paciente.
+
+    Retorna el mismo JSON estructurado de la HC más la transcripción completa.
+    """
+    from app.agents.agent_hc_extractor import HCExtractorAgent
+    from app.core.config import settings
+    import tempfile, os
+
+    # Guardar audio temporalmente
+    suffix = os.path.splitext(audio.filename or "audio.wav")[1] or ".wav"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp.write(await audio.read())
+        tmp_path = tmp.name
+
+    try:
+        # Transcribir con Whisper si está disponible, sino retornar error claro
+        try:
+            import whisper
+            model = whisper.load_model("base")
+            result = model.transcribe(tmp_path, language="es")
+            transcripcion = result["text"]
+        except ImportError:
+            raise HTTPException(
+                status_code=501,
+                detail="Whisper no instalado. Usa POST /api/hc/extract con la transcripción en texto."
+            )
+
+        agente    = HCExtractorAgent(llm_provider=getattr(settings, "llm_provider", None))
+        resultado = agente.extract(transcripcion, es_audio=True)
+        resultado["transcripcion"] = transcripcion
+        return resultado
+
+    finally:
+        try: os.unlink(tmp_path)
+        except Exception: pass
