@@ -162,9 +162,9 @@ Edita el archivo `.env` con tus credenciales:
 
 ```env
 # ── Base de datos MySQL ───────────────────────────────────────────────
-DB_HOST=181.39.74.126
+DB_HOST=xxx.xxx.xxx.xxx
 DB_PORT=3306
-DB_NAME=sanmarcosguayaquil
+DB_NAME=sanmxxxxxxxx
 DB_USER=tu_usuario
 DB_PASSWORD=tu_contraseña
 
@@ -211,9 +211,9 @@ Abre `http://localhost:8000` en tu navegador. El sistema soporta:
 "Resumen estadístico del sistema"
 
 # Buscar paciente
-"Historial de GRECIA MARIBEL MURIEL CALERO"
-"Consultas del paciente ID 39121"
-"Cédula 0921097408"
+"Historial de GRECxxxxx xxxxxxxxO"
+"Consultas del paciente ID 3xxxxxxxx1"
+"Cédula 0921xxxxxxx8"
 
 # Consulta clínica
 "Soy el Dr. García, el paciente tiene fiebre y dolor de cabeza"
@@ -536,4 +536,4 @@ docker-compose up -d
 ## 📄 Licencia
 
 Proyecto académico — Trabajo de Titulación  
-Todos los derechos reservados © 2025
+Todos los derechos reservados © 2026
