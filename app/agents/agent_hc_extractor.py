@@ -7,17 +7,19 @@ Flujo:
   3. Retorna JSON con IDs resueltos listos para el frontend
 
 Mapa de tablas catálogo:
-  medicamentos                   → idMedicamentos        (recetas)
-  hc_vias_administracion         → viasAdministracion_id (recetas)
-  hc_unidadmedicamento           → unidad_id             (recetas)
-  receta_pauta                   → pauta_id              (recetas)
-  hc_tipos_examenes              → id_examen             (orden_examen)
-  tipo_revision_organos_sistemas → tipoRevision_id       (revision_organos_sistemas)
-  tipo_examen_fisico             → tipoExamen_id         (examen_fisico)
+  medicamentos                   → idMedicamentos (PK)   (recetas)
+  hc_vias_administracion         → id                    (recetas)
+  hc_unidadmedicamento           → id                    (recetas)
+  receta_pauta                   → id                    (recetas)
+  hc_tipos_examenes              → id                    (orden_examen)
+  tipo_revision_organos_sistemas → id                    (revision_organos_sistemas)
+  tipo_examen_fisico             → id                    (examen_fisico)
 """
 from __future__ import annotations
+import difflib
 import json
 import re
+import unicodedata
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -80,70 +82,183 @@ def segmentar_conversacion(texto: str) -> dict[str, str]:
     return {k: " ".join(v) for k, v in segmentos.items()}
 
 
+# ── Normalización y matching ──────────────────────────────────────────
+def _norm(s: str) -> str:
+    """Minúsculas, sin acentos, slashes/guiones → espacio, espacios colapsados."""
+    if not s:
+        return ""
+    nfkd = unicodedata.normalize("NFKD", str(s))
+    # quitar acentos y reemplazar chars no-alfanuméricos por espacio
+    chars = []
+    for c in nfkd:
+        if unicodedata.combining(c):
+            continue
+        if c.isalnum():
+            chars.append(c)
+        else:
+            chars.append(" ")
+    return " ".join("".join(chars).lower().split())
+
+_PRIORIDAD: dict[str, int] = {"URGENTE": 1, "RUTINA": 2, "CONTROL": 3}
+
+# Alias: término del LLM → variantes a buscar en catálogo (ya normalizadas)
+_ALIAS_QUERY: dict[str, list[str]] = {
+    # Exámenes de laboratorio
+    "pcr":                          ["pcr", "proteina c reactiva"],
+    "bh":                           ["bh", "biometria hematica", "hemograma"],
+    "hemograma":                    ["hemograma", "biometria hematica", "bh"],
+    "biometria hematica":           ["biometria hematica", "hemograma", "bh"],
+    "rx":                           ["rx", "radiografia", "rayos x"],
+    "eco":                          ["eco", "ecografia", "ultrasonido"],
+    "tac":                          ["tac", "tomografia", "tomografia computarizada"],
+    "rmn":                          ["rmn", "resonancia", "resonancia magnetica"],
+    "ekg":                          ["ekg", "ecg", "electrocardiograma"],
+    "ecg":                          ["ecg", "ekg", "electrocardiograma"],
+    # Revisión de órganos — mapea nombres del LLM → nombres exactos en la DB
+    "digestivo gastrointestinal":   ["digestivo", "digestivo gastrointestinal", "gastrointestinal"],
+    "digestivo":                    ["digestivo", "digestivo gastrointestinal"],
+    "gastrointestinal":             ["digestivo", "gastrointestinal", "digestivo gastrointestinal"],
+    "urinario renal":               ["urinario", "renal", "urinario renal"],
+    "urinario":                     ["urinario", "urinario renal", "renal"],
+    "renal":                        ["urinario", "renal"],
+    "neurologico":                  ["nervioso", "neurologico", "neurológico"],
+    "nervioso":                     ["nervioso", "neurologico"],
+    "cardiovascular":               ["cardiovascular", "cardio vascular"],
+    "cardio vascular":              ["cardio vascular", "cardiovascular"],
+    "musculo esqueletico":          ["musculo esqueletico", "musculo esquelétic", "esqueletico"],
+    "musculoesqueletico":           ["musculo esqueletico", "esqueletico"],
+    "hematologico":                 ["hemo linfatico", "hematologico", "hemo"],
+    "hemo linfatico":               ["hemo linfatico", "hematologico"],
+    "hematolinfatico":              ["hemo linfatico", "hematologico"],
+    "ginecologico reproductivo":    ["ginecologico", "reproductivo", "genital"],
+    "ginecologico":                 ["ginecologico", "genital", "reproductivo"],
+    "psiquiatrico mental":          ["psiquiatrico", "mental"],
+    "psiquiatrico":                 ["psiquiatrico", "mental"],
+    "endocrino":                    ["endocrino"],
+    "dermatologico":                ["dermatologico", "piel"],
+    "oftalmologico":                ["oftalmologico", "organos de los sentidos"],
+    "otorrinolaringologico":        ["otorrinolaringologico", "organos de los sentidos"],
+    "respiratorio":                 ["respiratorio"],
+}
+
+
 # ══════════════════════════════════════════════════════════════════════
 class CatalogResolver:
     """
-    Resuelve nombres textuales → IDs consultando tablas catálogo en MySQL.
-    Todas las búsquedas son insensibles a mayúsculas con fallback LIKE.
+    Resuelve nombres textuales → IDs en tablas catálogo MySQL.
+    Usa normalización NFKD (sin acentos) + 5 niveles de matching.
     """
 
     def __init__(self, db: "Session") -> None:
         self.db = db
 
-    def _buscar(self, tabla: str, campo: str, valor: str | None,
-                campo_id: str = "id") -> int | None:
-        """Exacto insensible a mayúsculas → fallback LIKE."""
-        if not valor:
-            return None
+    # ── Carga de tabla ───────────────────────────────────────────────
+
+    def _load(self, tabla: str, pk: str, campo: str) -> list[tuple]:
         from sqlalchemy import text as sqlt
         try:
-            row = self.db.execute(
-                sqlt(f"SELECT {campo_id} FROM {tabla} "
-                     f"WHERE LOWER({campo}) = LOWER(:v) LIMIT 1"),
-                {"v": valor.strip()}
-            ).fetchone()
-            if row:
-                return row[0]
-            row = self.db.execute(
-                sqlt(f"SELECT {campo_id} FROM {tabla} "
-                     f"WHERE LOWER({campo}) LIKE LOWER(:v) LIMIT 1"),
-                {"v": f"%{valor.strip()}%"}
-            ).fetchone()
-            return row[0] if row else None
+            return self.db.execute(
+                sqlt(f"SELECT {pk}, {campo} FROM {tabla}")
+            ).fetchall()
         except Exception:
+            pass
+        # Fallback: auto-detectar PK con SHOW COLUMNS (maneja tablas con PK no estándar)
+        try:
+            cols = self.db.execute(sqlt(f"SHOW COLUMNS FROM {tabla}")).fetchall()
+            pk_auto = cols[0][0]  # primera columna = PK generalmente
+            return self.db.execute(
+                sqlt(f"SELECT {pk_auto}, {campo} FROM {tabla}")
+            ).fetchall()
+        except Exception:
+            return []
+
+    # ── Matching multinivel ──────────────────────────────────────────
+
+    def _match(self, rows: list[tuple], valor: str) -> int | None:
+        """Exact → contains → reverse-contains → word-overlap → difflib."""
+        if not valor or not rows:
             return None
+        queries = _ALIAS_QUERY.get(_norm(valor), [_norm(valor)])
+
+        for vn in queries:
+            if not vn:
+                continue
+
+            # 1. Exacto normalizado
+            for pk, nombre in rows:
+                if nombre and _norm(nombre) == vn:
+                    return pk
+
+            # 2. valor contenido en nombre del catálogo
+            for pk, nombre in rows:
+                if nombre and vn in _norm(nombre):
+                    return pk
+
+            # 3. nombre del catálogo contenido en valor (nombres cortos)
+            for pk, nombre in rows:
+                if nombre:
+                    nn = _norm(nombre)
+                    if nn and len(nn) >= 3 and nn in vn:
+                        return pk
+
+            # 4. Solapamiento de palabras (≥ 50 %)
+            vwords = set(vn.split())
+            best_pk, best_score = None, 0.0
+            for pk, nombre in rows:
+                if not nombre:
+                    continue
+                nwords = set(_norm(nombre).split())
+                common = vwords & nwords
+                if not common:
+                    continue
+                score = len(common) / max(len(vwords), len(nwords))
+                if score > best_score:
+                    best_score, best_pk = score, pk
+            if best_score >= 0.5:
+                return best_pk
+
+            # 5. difflib ratio (≥ 0.75)
+            best_pk, best_ratio = None, 0.0
+            for pk, nombre in rows:
+                if not nombre:
+                    continue
+                r = difflib.SequenceMatcher(None, vn, _norm(nombre)).ratio()
+                if r > best_ratio:
+                    best_ratio, best_pk = r, pk
+            if best_ratio >= 0.75:
+                return best_pk
+
+        return None
+
+    # ── Búsqueda en tabla ────────────────────────────────────────────
+
+    def _buscar(self, tabla: str, campo: str, valor: str | None,
+                campo_id: str = "id") -> int | None:
+        if not valor:
+            return None
+        rows = self._load(tabla, campo_id, campo)
+        return self._match(rows, valor)
 
     def _buscar_multi(self, tabla: str, campos: list[str],
                       valor: str | None, campo_id: str = "id") -> int | None:
-        """Busca en múltiples columnas (para receta_pauta)."""
+        """Busca contra múltiples columnas de texto (útil para receta_pauta)."""
         if not valor:
             return None
-        from sqlalchemy import text as sqlt
         for campo in campos:
-            try:
-                row = self.db.execute(
-                    sqlt(f"SELECT {campo_id} FROM {tabla} "
-                         f"WHERE LOWER({campo}) LIKE LOWER(:v) LIMIT 1"),
-                    {"v": f"%{valor.strip()}%"}
-                ).fetchone()
-                if row:
-                    return row[0]
-            except Exception:
-                continue
+            rows = self._load(tabla, campo_id, campo)
+            if rows:
+                result = self._match(rows, valor)
+                if result is not None:
+                    return result
         return None
 
+    # ── Resolución por sección ───────────────────────────────────────
+
     def resolver_receta(self, r: dict) -> dict:
-        """
-        Resuelve una receta:
-          idMedicamentos_nombre    → medicamentos.id         → idMedicamentos
-          viasAdministracion_nombre→ hc_vias_administracion.id → viasAdministracion_id
-          unidad_nombre            → hc_unidadmedicamento.id → unidad_id
-          pauta_nombre             → receta_pauta.id         → pauta_id
-        """
         return {
-            # IDs resueltos — listos para insertar en tabla recetas
             "idMedicamentos":        self._buscar(
-                "medicamentos", "nombre", r.get("idMedicamentos_nombre")),
+                "medicamentos", "nombre", r.get("idMedicamentos_nombre"),
+                campo_id="idMedicamentos"),          # PK real de la tabla
             "viasAdministracion_id": self._buscar(
                 "hc_vias_administracion", "nombre", r.get("viasAdministracion_nombre")),
             "dosis":                 r.get("dosis"),
@@ -151,11 +266,11 @@ class CatalogResolver:
                 "hc_unidadmedicamento", "nombre", r.get("unidad_nombre")),
             "pauta_id":              self._buscar_multi(
                 "receta_pauta",
-                ["intervalo", "frecuencia", "durante", "nombre"],
+                ["intervalo", "frecuencia", "durante", "nombre", "descripcion", "pauta"],
                 r.get("pauta_nombre")),
             "dias":                  r.get("dias"),
             "total":                 r.get("total"),
-            # Nombres originales como referencia para el frontend
+            "lateralidad":           r.get("lateralidad"),
             "_nombre_medicamento":   r.get("idMedicamentos_nombre"),
             "_via_administracion":   r.get("viasAdministracion_nombre"),
             "_unidad":               r.get("unidad_nombre"),
@@ -163,24 +278,23 @@ class CatalogResolver:
         }
 
     def resolver_examen(self, e: dict) -> dict:
-        """
-        Resuelve un examen:
-          id_examen_nombre → hc_tipos_examenes.name → id_examen
-          prioridad: RUTINA=2, URGENTE=1, CONTROL=3
-        """
+        tipo = (e.get("tipo") or "laboratorio").lower()
+        imagen = 1 if tipo == "imagen" else 0
+        p = e.get("prioridad", "RUTINA")
+        prioridad = _PRIORIDAD.get(str(p).upper(), p if isinstance(p, int) else 2)
         return {
-            "id_examen":       self._buscar(
+            "id_examen":            self._buscar(
                 "hc_tipos_examenes", "name", e.get("id_examen_nombre")),
-            "observaciones":   e.get("observaciones"),
-            "prioridad":       e.get("prioridad"),
-            "_nombre_examen":  e.get("id_examen_nombre"),
+            "observaciones":        e.get("observaciones"),
+            "tipo":                 tipo,
+            "imagen":               imagen,
+            "prioridad":            prioridad,
+            "paciente_contaminado": int(e.get("paciente_contaminado") or 0),
+            "sedacion":             int(e.get("sedacion") or 0),
+            "_nombre_examen":       e.get("id_examen_nombre"),
         }
 
     def resolver_revision_organo(self, o: dict) -> dict:
-        """
-        Resuelve revisión de órgano:
-          tipoRevision_nombre → tipo_revision_organos_sistemas.Nombre → tipoRevision_id
-        """
         return {
             "tipoRevision_id": self._buscar(
                 "tipo_revision_organos_sistemas", "Nombre", o.get("tipoRevision_nombre")),
@@ -189,10 +303,6 @@ class CatalogResolver:
         }
 
     def resolver_examen_fisico(self, ef: dict) -> dict:
-        """
-        Resuelve examen físico:
-          tipoExamen_nombre → tipo_examen_fisico.nombre → tipoExamen_id
-        """
         return {
             "tipoExamen_id":  self._buscar(
                 "tipo_examen_fisico", "nombre", ef.get("tipoExamen_nombre")),
@@ -201,18 +311,18 @@ class CatalogResolver:
         }
 
     def resolver_todo(self, hc: dict) -> dict:
-        """Resuelve todos los IDs del JSON extraído por el LLM."""
         return {
-            "motivo_consulta":  hc.get("motivo_consulta", {}),
-            "recetas":          [self.resolver_receta(r)
-                                 for r in hc.get("recetas", [])],
-            "examenes":         [self.resolver_examen(e)
-                                 for e in hc.get("examenes", [])],
-            "revision_organos": [self.resolver_revision_organo(o)
-                                 for o in hc.get("revision_organos", [])],
-            "examen_fisico":    [self.resolver_examen_fisico(ef)
-                                 for ef in hc.get("examen_fisico", [])],
-            "metadata":         hc.get("metadata", {}),
+            "motivo_consulta":   hc.get("motivo_consulta", {}),
+            "estado_enfermedad": hc.get("estado_enfermedad"),
+            "recetas":           [self.resolver_receta(r)
+                                  for r in hc.get("recetas", [])],
+            "examenes":          [self.resolver_examen(e)
+                                  for e in hc.get("examenes", [])],
+            "revision_organos":  [self.resolver_revision_organo(o)
+                                  for o in hc.get("revision_organos", [])],
+            "examen_fisico":     [self.resolver_examen_fisico(ef)
+                                  for ef in hc.get("examen_fisico", [])],
+            "metadata":          hc.get("metadata", {}),
         }
 
 

@@ -43,13 +43,13 @@ gastroenterología, otorrinolaringología, neumología, reumatología y más.
 - 2 = crónico: "crónico", "desde hace meses/años", "de larga data", "recurrente", "base"
 
 ### recetas — una entrada por medicamento:
-- nombreMedicamento: nombre genérico o comercial exacto
-- viaAdministracion: oral / intravenosa / intramuscular / subcutánea / tópica /
+- idMedicamentos_nombre: nombre genérico o comercial exacto
+- viasAdministracion_nombre: oral / intravenosa / intramuscular / subcutánea / tópica /
   inhalatoria / oftálmica / ótica / nasal / sublingual / transdérmica / rectal
 - dosis: número exacto (ej: "500", "1", "2")
-- unidad: mg / g / ml / UI / mcg / gotas / comprimidos / cápsulas / puffs
-- frecuencia: "cada 8 horas" / "cada 12 horas" / "una vez al día" / "según dolor" / etc.
-- duracion_dias: número entero de días
+- unidad_nombre: mg / g / ml / UI / mcg / gotas / comprimidos / cápsulas / puffs
+- pauta_nombre: "cada 8 horas" / "cada 12 horas" / "una vez al día" / "según dolor" / etc.
+- dias: número entero de días
 - total: número total de unidades (comprimidos, ampollas, frascos)
 - lateralidad: "ojo derecho" / "ojo izquierdo" / "ambos ojos" / null
 
@@ -69,21 +69,25 @@ gastroenterología, otorrinolaringología, neumología, reumatología y más.
 Sistemas posibles: cardiovascular, respiratorio, digestivo/gastrointestinal,
 urinario/renal, neurológico, musculoesquelético, endocrino, ginecológico/reproductivo,
 hematológico, dermatológico, oftalmológico, otorrinolaringológico, psiquiátrico/mental
+Usa exactamente el nombre del sistema como valor de `tipoRevision_nombre`.
 
 ### examen_fisico — UNA entrada por región anatómica distinta:
 - PRIMERA entrada SIEMPRE = "Signos vitales" (temperatura, PA, FC, FR, SatO2, peso, talla)
 - Luego una entrada por cada región examinada:
   Cabeza / Cuello / Tórax / Corazón / Pulmones / Abdomen / Pelvis /
   Región lumbar / Extremidades superiores / Extremidades inferiores /
-  Piel / Fosa lumbar derecha / Fosa lumbar izquierda / etc.
+  Piel / Orofaringe / Fosa lumbar derecha / Fosa lumbar izquierda / etc.
 - NO agrupar regiones distintas en una misma entrada
+- Usa exactamente el nombre de la región como clave `tipoExamen_nombre`
 - Ejemplo:
-  [{"region": "Signos vitales", "observacion": "T 37.2°C, PA 120/80, FC 78, SatO2 98%"},
-   {"region": "Corazón", "observacion": "ruidos rítmicos, no soplos"},
-   {"region": "Pulmones", "observacion": "murmullo vesicular conservado bilateral"},
-   {"region": "Abdomen", "observacion": "blando, depresible, sin megalias"}]
+  [{"tipoExamen_nombre": "Signos vitales", "Observacion": "T 37.2°C, PA 120/80, FC 78, SatO2 98%"},
+   {"tipoExamen_nombre": "Corazón", "Observacion": "ruidos rítmicos, no soplos"},
+   {"tipoExamen_nombre": "Pulmones", "Observacion": "murmullo vesicular conservado bilateral"},
+   {"tipoExamen_nombre": "Abdomen", "Observacion": "blando, depresible, sin megalias"}]
 
 ## Formato de salida (JSON estricto)
+
+IMPORTANTE: usa EXACTAMENTE estos nombres de campo. El sistema los lee literalmente.
 
 ```json
 {
@@ -94,46 +98,42 @@ hematológico, dermatológico, oftalmológico, otorrinolaringológico, psiquiát
   "estado_enfermedad": null,
   "recetas": [
     {
-      "nombreMedicamento": "nombre exacto",
-      "viaAdministracion": "vía",
-      "dosis": "cantidad",
-      "unidad": "unidad",
-      "frecuencia": "frecuencia",
-      "duracion_dias": null,
+      "idMedicamentos_nombre": "nombre exacto del medicamento",
+      "viasAdministracion_nombre": "vía",
+      "dosis": "cantidad numérica",
+      "unidad_nombre": "unidad",
+      "pauta_nombre": "frecuencia (ej: cada 8 horas)",
+      "dias": null,
       "total": null,
       "lateralidad": null
     }
   ],
   "examenes": [
     {
-      "nombreExamen": "nombre del examen",
+      "id_examen_nombre": "nombre del examen",
       "tipo": "laboratorio | imagen",
       "prioridad": "RUTINA | URGENTE | CONTROL",
       "observaciones": null,
-      "paciente_contaminado": null,
-      "sedacion": null
+      "paciente_contaminado": 0,
+      "sedacion": 0
     }
   ],
   "revision_organos": [
     {
-      "organo": "nombre del sistema",
+      "tipoRevision_nombre": "nombre del sistema orgánico",
       "observacion": "hallazgo"
     }
   ],
   "examen_fisico": [
     {
-      "region": "Signos vitales",
-      "observacion": "T, PA, FC, FR, SatO2"
+      "tipoExamen_nombre": "Signos vitales",
+      "Observacion": "T, PA, FC, FR, SatO2"
     },
     {
-      "region": "región anatómica",
-      "observacion": "hallazgo objetivo"
+      "tipoExamen_nombre": "región anatómica",
+      "Observacion": "hallazgo objetivo"
     }
   ],
-  "metadata": {
-    "voz_doctor": "fragmentos del doctor",
-    "voz_paciente": "fragmentos del paciente",
-    "confianza": "alta | media | baja"
-  }
+  "metadata": {}
 }
 ```
