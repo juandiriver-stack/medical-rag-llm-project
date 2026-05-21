@@ -44,6 +44,35 @@ _PATRONES_PACIENTE = [
 ]
 
 
+def _anonimizar(texto: str) -> str:
+    """
+    Enmascara cédulas ecuatorianas y números de teléfono en el texto
+    antes de enviarlo al LLM externo. Solo aplica al texto hacia el LLM;
+    lo que ve el médico en pantalla no se modifica.
+
+    Patrones cubiertos:
+      - Cédula: 10 dígitos seguidos (ej: 0921097408 → 092****408)
+      - Teléfono fijo: 7-8 dígitos (ej: 2345678 → 23****78)
+      - Teléfono móvil: 10 dígitos empezando en 09 (ej: 0991234567 → 099****567)
+    """
+    if not texto:
+        return texto
+
+    # Cédula ecuatoriana: 10 dígitos seguidos (no precedido por más dígitos)
+    texto = re.sub(
+        r'(?<!\d)(\d{3})\d{4}(\d{3})(?!\d)',
+        lambda m: m.group(1) + "****" + m.group(2),
+        texto
+    )
+    # Teléfono móvil: empieza en 09, 10 dígitos
+    texto = re.sub(
+        r'(?<!\d)(09\d)\d{4}(\d{3})(?!\d)',
+        lambda m: m.group(1) + "****" + m.group(2),
+        texto
+    )
+    return texto
+
+
 def detectar_voz(texto: str) -> str:
     t = texto.lower()
     doc = any(re.search(p, t) for p in _PATRONES_DOCTOR)
@@ -368,7 +397,9 @@ class HCExtractorAgent:
             return self._hc_vacia(texto, segmentos, "sin-llm")
 
         try:
-            respuesta = llm.invoke(prompt, system=HC_SYSTEM)
+            # Anonimizar cédulas y teléfonos antes de enviar al LLM externo
+            prompt_anonimizado = _anonimizar(prompt)
+            respuesta = llm.invoke(prompt_anonimizado, system=HC_SYSTEM)
             hc_raw    = self._parsear_json(respuesta)
 
             # Resolver IDs desde tablas catálogo

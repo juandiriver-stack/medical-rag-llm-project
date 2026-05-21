@@ -238,15 +238,37 @@ class PatientAgent:
 
     # ── Formatter ─────────────────────────────────────────────────────
     @staticmethod
-    def _fmt(paciente: dict, historial: dict) -> str:
+    def _mask_cedula(v: str | None) -> str:
+        """Enmascara cédula: 0912345678 → 091****678"""
+        if not v:
+            return "-"
+        s = str(v)
+        if len(s) >= 6:
+            return s[:3] + "*" * (len(s) - 6) + s[-3:]
+        return "***"
+
+    @staticmethod
+    def _mask_telefono(v: str | None) -> str:
+        """Enmascara teléfono: 0991234567 → 099****567"""
+        if not v:
+            return "-"
+        s = str(v)
+        if len(s) >= 6:
+            return s[:3] + "*" * (len(s) - 6) + s[-3:]
+        return "***"
+
+    @classmethod
+    def _fmt(cls, paciente: dict, historial: dict) -> str:
         if paciente.get("type") == "error":
             return paciente["message"]
         d = paciente.get("data", {})
+        # Enmascarar datos sensibles antes de enviar al LLM externo
+        # El médico ve los datos completos en pantalla; solo el LLM recibe versión enmascarada
         lines = [
             f"Paciente ID {d.get('id_paciente')}:",
             f"  Nombre:          {d.get('nombre_completo', '-')}",
-            f"  Cédula:          {d.get('cedula', '-')}",
-            f"  Teléfono:        {d.get('telefono', '-')}",
+            f"  Cédula:          {cls._mask_cedula(d.get('cedula'))}",
+            f"  Teléfono:        {cls._mask_telefono(d.get('telefono'))}",
             f"  Ocupación:       {d.get('ocupacion', '-')}",
             f"  Total consultas: {d.get('total_consultas', 0)}",
         ]

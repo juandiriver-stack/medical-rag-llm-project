@@ -239,8 +239,11 @@ class RAGEngine:
 
         for row in rows:
             nombre = (row.nombre_paciente or "").strip()
+            # Anonimizar: usar token genérico en el texto del chunk
+            # El nombre real NUNCA sale hacia el LLM externo
+            token_pac = f"PACIENTE_{row.idpacientes}" if row.idpacientes else "PACIENTE_ANONIMO"
             parts  = []
-            if nombre:          parts.append(f"Paciente: {nombre}.")
+            if nombre:          parts.append(f"Paciente: {token_pac}.")
             if row.fecha:        parts.append(f"Fecha: {row.fecha}.")
             if row.motivoConsulta:   parts.append(f"Motivo: {row.motivoConsulta}.")
             if row.enfermedadActual: parts.append(f"Enfermedad: {row.enfermedadActual}.")
