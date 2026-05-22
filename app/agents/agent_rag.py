@@ -14,6 +14,29 @@ from typing import TYPE_CHECKING
 
 from app.rag.engine import rag_engine
 
+
+def _anonimizar_nombre(nombre: str) -> str:
+    """
+    Enmascara el nombre real del paciente para el contexto que va al LLM.
+    Conserva la primera y última letra de cada palabra.
+    Ej: 'Erika Maribel Chasin Caicedo' → 'Exxxxxe Mxxxxxxl Cxxxxn Cxxxxdo'
+    El médico sigue viendo el nombre real en pantalla (metadata.nombre_paciente).
+    """
+    if not nombre:
+        return ""
+    palabras = []
+    for palabra in nombre.strip().split():
+        if len(palabra) <= 2:
+            palabras.append(palabra)
+        elif len(palabra) == 3:
+            palabras.append(palabra[0] + "x" + palabra[-1])
+        else:
+            palabras.append(palabra[0] + "x" * (len(palabra) - 2) + palabra[-1])
+    return " ".join(palabras)
+from app.core.ndcg_metrics import RAGMetrics
+
+_rag_metrics = RAGMetrics()
+
 if TYPE_CHECKING:
     from app.tools.consultas_tool import ConsultasTool
 
@@ -54,7 +77,8 @@ class RAGAgent:
                     pac  = meta.get("nombre_paciente", "")
                     hdr  = f"[{i}] relevancia={r['score']:.4f}"
                     if pac:
-                        hdr += f" | paciente: {pac}"
+                        # Anonimizar nombre antes de enviar al LLM
+                        hdr += f" | paciente: {_anonimizar_nombre(pac)}"
                     fragmentos.append(f"{hdr}\n{r['text']}")
                 parts.append("Registros clínicos relevantes (búsqueda semántica):\n" + "\n\n".join(fragmentos))
             else:
@@ -74,7 +98,9 @@ class RAGAgent:
                 if items:
                     filas = []
                     for c in items:
-                        nombre = c.get("nombre_paciente") or f"ID {c.get('id_paciente','?')}"
+                        nombre_raw = c.get("nombre_paciente") or ""
+                        # Anonimizar nombre antes de enviar al LLM
+                        nombre = _anonimizar_nombre(nombre_raw) if nombre_raw else f"ID {c.get('id_paciente','?')}"
                         motivo = (c.get("motivo_consulta")   or "-")[:100]
                         enf    = (c.get("enfermedad_actual") or "-")[:80]
                         filas.append(f"  • [{nombre}] {motivo} | {enf}")
@@ -87,10 +113,19 @@ class RAGAgent:
 
         ctx = "\n\n".join(parts) if parts else "Sin resultados clínicos relevantes."
 
+        # Recuperar chunks RAG para métricas (pueden ser de raw_data)
+        rag_chunks = raw_data.get("rag_results", [])
+
+        # Calcular métricas RAG automáticamente desde los RRF scores
+        rrf_scores  = [r.get("score", 0) for r in rag_chunks] if rag_chunks else []
+        relevances  = _rag_metrics.relevances_from_rrf(rrf_scores, umbral=0.01)
+        rag_metrics = _rag_metrics.compute_all(relevances, k=min(5, len(relevances)))
+
         return {
-            "agent":      "rag",
-            "tools_used": tools_used,
-            "raw_data":   raw_data,
-            "context":    ctx,
-            "intent":     "consulta_medica",
+            "agent":       "rag",
+            "tools_used":  tools_used,
+            "raw_data":    raw_data,
+            "context":     ctx,
+            "intent":      "consulta_medica",
+            "rag_metrics": rag_metrics,   # Precision, Recall, NDCG, MRR
         }
